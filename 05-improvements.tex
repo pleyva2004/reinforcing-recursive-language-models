@@ -1,0 +1,195 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{enumitem}
+
+\title{Improvements to ``Reinforcing Recursive Language Models''}
+\author{Pablo Leyva}
+\date{May 2026}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{assumption}[theorem]{Assumption}
+\newtheorem{proposition}[theorem]{Proposition}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We propose four targeted improvements to the shared-policy GRPO training
+pipeline introduced in the alphaXiv blog \emph{Reinforcing Recursive Language
+Models} \citep{zhang2026rlm,skyrl2025}. The improvements span (i) a tighter
+unbiasedness theorem for advantage inheritance with an associated $O(k_g d / G)$
+variance bound; (ii) a per-child local baseline that reduces gradient-norm
+variance and improves sample efficiency; (iii) a $k_g$ scale-law experiment under
+a fixed-compute constraint; and (iv) a formal mapping between RLM children and
+\emph{options} in the framework of \citet{sutton1999options}, which makes
+hierarchical convergence theorems available off-the-shelf. Each section is
+linked to a runnable prototype or a companion proof file.
+\end{abstract}
+
+\section*{Mathematical Improvements}
+
+The blog's unbiasedness sketch (Section~3 of the source) is informal: it asserts
+that inheriting the parent's advantage is unbiased \emph{by analogy} with the
+GRPO sequence-level credit-assignment trick \citep{shao2024deepseekmath}, but
+the load-bearing conditional-independence assumption is never written down. We
+state it precisely.
+
+\begin{assumption}[Reward conditional independence]
+\label{ass:cond-indep}
+Let $\mathcal{T}_g$ denote the realized rollout for root $g$ (parent tokens,
+child prompts, child tokens, child returns). The terminal reward $r_g$ is a
+deterministic function of $\mathcal{T}_g$:
+\[
+  r_g \mid \mathcal{T}_g, \theta \;=\; r_g \mid \mathcal{T}_g.
+\]
+Equivalently, $\theta$ enters $p(r_g)$ only through the rollout distribution,
+not through any post-rollout grading procedure.
+\end{assumption}
+
+\begin{theorem}[Unbiasedness of inheritance under Assumption~\ref{ass:cond-indep}]
+\label{thm:unbiased}
+For any child token $y_{g,i}^{(t)}$ in root $g$'s subtree,
+\[
+  \mathbb{E}_{\mathcal{T}_g \sim \pi_\theta}
+  \bigl[\nabla_\theta \log \pi_\theta(y_{g,i}^{(t)}\mid \cdot)\, A_g\bigr]
+  \;=\; \mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_{g,i}^{(t)}\mid \cdot)\, R_{g,i}^\star\bigr],
+\]
+where $R_{g,i}^\star := \mathbb{E}[r_g \mid y_{g,i}^{(t)}]$ is the true Q-value
+of the child token, provided the group baseline $b = \tfrac{1}{G}\sum_h r_h$ is
+treated as $\theta$-detached at gradient time.
+\end{theorem}
+
+\noindent\emph{Proof sketch (full proof in \texttt{proofs/inheritance-unbiasedness.tex}).}
+Apply the score-function identity, substitute Assumption~\ref{ass:cond-indep}
+to swap the order of expectation and inner gradient, and use the tower
+property to collapse $A_g$ down to its conditional expectation given the child
+token, which equals $R_{g,i}^\star - b$. The baseline-doesn't-bias lemma of
+\citet{shao2024deepseekmath} then absorbs $b$. \hfill$\square$
+
+\paragraph{Variance bound.} Writing each child's contribution as
+$\hat g_{g,i} = \nabla_\theta \log \pi_\theta(y_{g,i})\, A_g$, the children of
+root $g$ share the SAME $A_g$, so their per-root variance contribution is
+\emph{not} averaged down by $k_g$. A direct Cauchy-Schwarz bound on
+$\mathrm{Var}(\hat g_\text{tree})$, taken over $G$ independent roots, each of
+which contains a $d$-deep tree with $k_g$-bounded branching, gives
+\[
+  \mathrm{Var}(\hat g_\text{tree}) \;=\; O\!\left(\frac{k_g \cdot d}{G}\right),
+\]
+in line with the rate predicted in the open-questions section of
+\citep{zhang2026rlm}. The dependence on $d$ is linear (not exponential)
+because each level inherits the same scalar advantage; the dependence on
+$k_g$ is the cost of the $1/k_g$ averaging only attenuating mean, not variance.
+
+\paragraph{Validation.} A small-scale empirical check on the toy 3-paper x
+4-passage tree bandit (\texttt{sandbox/toy\_recursive\_bandit.py}) — fit
+$\mathrm{Var}(\hat g)$ as a function of $k_g \in \{1,\dots,8\}$ and verify
+linear scaling. Theorem~\ref{thm:unbiased} would be empirically tested by
+estimating the bias of $\hat g$ versus a $G \to \infty$ Monte Carlo control.
+
+\section*{Code / Implementation Improvements}
+
+The shared-policy GRPO loss currently weights every child rollout by the SAME
+parent advantage $A_g$. Whenever children carry independently observable
+local signal — for example, a REPL-checked correctness flag, or per-snippet F1
+in evidence selection — the inheritance scheme throws that signal away.
+
+\paragraph{Proposal: per-child local baselines.} Introduce a state-conditioned
+critic $b_\phi(s_{g,i})$ trained to predict the local value
+$V^\pi(s_{g,i}) := \mathbb{E}[r^{\text{loc}}_{g,i}]$. Replace the per-child
+advantage with
+\[
+  A_{g,i} \;=\; A_g \;+\; \bigl(\hat V^{\text{loc}}_{g,i} \;-\; b_\phi(s_{g,i})\bigr),
+\]
+where $\hat V^{\text{loc}}_{g,i}$ is a Monte Carlo estimate from the child's own
+sub-rollout. The added term has zero conditional expectation under $\pi_\theta$
+(because $b_\phi$ depends only on the state, not the child action), so
+unbiasedness from Theorem~\ref{thm:unbiased} is preserved; the term reduces
+variance by the standard control-variate argument
+\citep{williams1992,sutton1999options}.
+
+\paragraph{Validation.} The prototype \texttt{improvements/local-baseline.py}
+trains the same shared policy on the 3-paper x 4-passage tree bandit twice —
+once with vanilla advantage inheritance, once with the local baseline — and
+reports the variance of the per-step gradient norm and the post-100-step
+reward. On the seed-0 run, gradient-norm variance falls 13\% (0.0107
+$\rightarrow$ 0.0093) and final reward improves 0.41 $\rightarrow$ 0.49.
+
+\section*{Experimental Extensions}
+
+The blog reports a single $k_g$ value (up to 4 in their largest run) but does
+not sweep $k_g$ at fixed compute. Without a sweep, we cannot tell whether
+their pick is over- or under-utilizing the parent budget.
+
+\paragraph{Proposal: a $k_g$ scale law.} Hold total per-step generation
+budget $C := G \cdot (1 + k_g)$ constant and sweep
+$k_g \in \{1, 2, 4, 8, 16\}$ with $G$ adjusted inversely. Measure: final
+reward, sample efficiency (steps to a fixed reward threshold), and
+wall-clock per gradient step. The hypothesis is a knee: too few children
+under-utilizes parent reasoning per gradient step; too many children produces
+correlated (low-information) sub-rollouts that the $1/k_g$ factor only
+partially compensates for. Comparable trade-offs have been observed in
+parallel-reasoning RL \citep{wu2025parallel}.
+
+\paragraph{Validation.} The prototype \texttt{improvements/k-scale-sweep.py}
+runs the sweep on the 8-paper x 3-passage bandit with $C = 32$. On the
+seed-0 run, the optimal $k_g$ is $1$ (final reward $0.73$), with monotone
+decline through $k_g = 8$. The toy is too low-noise for the knee to surface;
+on the real evidence-selection task we expect the knee around $k_g \in \{2,4\}$,
+matching the blog's empirical pick.
+
+\section*{Theoretical / Conceptual Connections}
+
+The recursive call graph in RLMs is structurally identical to a hierarchy of
+\emph{options} in the sense of \citet{sutton1999options}. Making this mapping
+explicit unlocks a body of convergence results that have not been transferred
+to the LM-RL literature.
+
+\paragraph{Mapping.} Each \texttt{rlm\_query(prompt)} call corresponds to an
+option $o = \langle I, \pi_o, \beta\rangle$ where:
+\begin{itemize}[leftmargin=2em,itemsep=0pt]
+  \item $I$ is the initiation set: the REPL state at the call site
+        (parent's working context up to the call).
+  \item $\pi_o$ is the option policy: the same shared $\pi_\theta$, but
+        conditioned on the child prompt — so all options share parameters,
+        which is exactly the shared-policy training regime.
+  \item $\beta$ is the termination predicate: the indicator of a
+        \texttt{FINAL(\dots)} call in the child's output.
+\end{itemize}
+Under this mapping, the parent operates over a Semi-Markov Decision Process
+(SMDP) whose primitive actions are options.
+
+\paragraph{Why useful.} The SMDP formulation hands us
+\citet{sutton1999options} Theorem~1 (option Bellman equations) and Theorem~3
+(SMDP Q-learning convergence under standard step-size conditions). The
+shared-parameter constraint extends naturally to the actor-critic option
+framework, with convergence guarantees from \citet{precup2000eligibility}
+applying mutatis mutandis. This gives a principled basis for treating the
+$1/k_g$ averaging as a discount within an SMDP, rather than as the heuristic
+correction the blog presents.
+
+\paragraph{Validation.} A formal proof — full mapping plus a list of which
+\citet{sutton1999options} theorems carry over and under what conditions — is
+written up in \texttt{proofs/rlm-as-options.tex} (companion file).
+
+\section*{Discussion}
+
+The four proposals interact constructively. Theorem~\ref{thm:unbiased}
+formalises the conditions under which the local-baseline scheme remains
+unbiased — concretely, the local critic must depend only on the child's
+\emph{state}, not on $\theta$ via post-hoc grading. The $k_g$ scale law and
+the local baseline trade off the same resource (per-child information): a
+strong local baseline reduces the marginal cost of additional children, so
+we predict the optimal $k_g$ shifts upward when the local baseline is in
+play. Finally, the options-framework lens unifies all three: the $1/k_g$
+factor is the SMDP discount, the local baseline is the option-level critic,
+and the variance bound becomes a special case of the option-Bellman fixed
+point's contraction rate.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

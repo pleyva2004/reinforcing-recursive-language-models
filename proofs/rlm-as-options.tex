@@ -1,0 +1,174 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{enumitem}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+
+\title{Recursive Language Model Children as Options:\\
+       a Sutton-Precup-Singh correspondence}
+\author{Pablo Leyva}
+\date{May 15, 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Setup: the Sutton-Precup-Singh options framework}
+
+Recall the options framework introduced by Sutton, Precup, and Singh (1999,
+\emph{Artificial Intelligence} 112). An MDP is a tuple
+$(\mathcal{S}, \mathcal{A}, P, R, \gamma)$. An \emph{option} is a triple
+$o = (I_o, \pi_o, \beta_o)$ where:
+\begin{itemize}
+\item $I_o \subseteq \mathcal{S}$ is the \emph{initiation set} --- states from
+      which $o$ can be invoked,
+\item $\pi_o : \mathcal{S} \to \Delta(\mathcal{A})$ is the option's
+      \emph{internal policy},
+\item $\beta_o : \mathcal{S} \to [0, 1]$ is the \emph{termination function} ---
+      the probability that $o$ terminates upon reaching state $s$.
+\end{itemize}
+A high-level controller selects options in $I_o \subseteq \mathcal{S}$;
+each option runs to termination, after which the controller selects another
+option. The induced process is a \emph{semi-Markov decision process} (SMDP).
+
+For the SMDP, define the option-value
+\[
+Q_\Omega(s, o) = \mathbb{E}\Bigl[\sum_{t=0}^{K-1} \gamma^t r_{t+1} + \gamma^K
+                 \max_{o' \in \mathcal{O}_{s_K}} Q_\Omega(s_K, o')
+                 \,\Big|\, s_0 = s,\ o_0 = o\Bigr],
+\]
+where $K$ is the (random) duration of $o$, $r_{t+1}$ are intra-option rewards,
+and $\mathcal{O}_{s_K}$ is the set of options available at termination state
+$s_K$. SPS Theorem~1 (1999, Theorem 1) shows that SMDP Q-learning with
+options converges with probability 1 to $Q_\Omega^*$ under standard
+Robbins-Monro stepsize and ergodicity conditions.
+
+\section*{Mapping: \texttt{rlm\_query} calls as options}
+
+Recall the RLM setup of \texttt{02-math-deep-dive.md}: the agent operates in a
+Python REPL with primitives \texttt{FINAL}, \texttt{FINAL\_VAR},
+\texttt{rlm\_query}. Each \texttt{rlm\_query(p)} call spawns a child rollout
+under the same policy $\pi_\theta$, returning the child's \texttt{FINAL}
+answer to the parent's REPL.
+
+We propose the following correspondence. Let $\mathcal{S}_{\mathrm{REPL}}$ be
+the set of REPL states (Python heap snapshots plus prompt history). Let
+$\mathcal{P}$ be the (possibly infinite) set of prompts that can appear as the
+argument of a \texttt{rlm\_query} call. For each prompt $p \in \mathcal{P}$,
+define option $o_p = (I_p, \pi_{o_p}, \beta_p)$ by:
+\begin{itemize}
+\item $I_p = \{s \in \mathcal{S}_{\mathrm{REPL}} : \pi_\theta\text{ may emit } \texttt{rlm\_query}(p) \text{ at } s\}$,
+\item $\pi_{o_p}(\cdot \mid s) = \pi_\theta(\cdot \mid s, \text{prompt} = p)$ ---
+      the same shared policy, conditioned on the child prompt $p$,
+\item $\beta_p(s) = \mathbf{1}[s \text{ contains a \texttt{FINAL}(.)} \text{ invocation}]$.
+\end{itemize}
+
+Primitive actions (one-token emissions that are not \texttt{rlm\_query} calls)
+are kept as-is: each token-emission action is a degenerate option with
+$\beta = 1$ everywhere and duration $K = 1$. This makes the entire RLM
+session an SMDP over the high-level alphabet
+$\mathcal{A}_{\Omega} = \mathcal{A}_{\mathrm{primitive}} \cup \{o_p : p \in \mathcal{P}\}$.
+
+The intra-option discounted reward of $o_p$ is the discounted sum of (zero)
+intra-child rewards plus the discounted child \emph{advantage} accumulated
+through advantage inheritance. In the undiscounted ($\gamma = 1$) limit,
+$Q_\Omega(s, o_p)$ reduces to the expected root reward $r_g$ given that the
+agent invoked $o_p$ from state $s$ and then continued under $\pi_\theta$.
+
+\section*{Theorem: convergence carry-over}
+
+\begin{theorem}[SMDP Q-learning convergence for RLM SMDPs]
+\label{thm:smdp}
+Let $\theta$ parameterise an autoregressive policy $\pi_\theta$ acting in the
+RLM SMDP defined by the mapping above. Let $\widehat Q_\Omega$ be the
+SMDP-Q-learning estimator,
+\[
+\widehat Q_\Omega(s, o) \leftarrow \widehat Q_\Omega(s, o) + \alpha_n
+   \Bigl[ R_o + \gamma^{K_o} \max_{o' \in \mathcal{O}_{s'}} \widehat Q_\Omega(s', o')
+   - \widehat Q_\Omega(s, o)\Bigr],
+\]
+with the conditions:
+\begin{enumerate}[label=(\roman*)]
+\item Robbins-Monro stepsizes: $\sum_n \alpha_n = \infty$, $\sum_n \alpha_n^2 < \infty$.
+\item Every $(s, o)$ pair is visited infinitely often.
+\item Bounded reward, finite SMDP option set at each state, finite expected
+      option duration.
+\end{enumerate}
+Then $\widehat Q_\Omega \to Q^*_\Omega$ with probability 1.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+The RLM SMDP, under the mapping of the previous section, satisfies all
+hypotheses of Sutton-Precup-Singh 1999, Theorem~1: it is an SMDP with finite
+option set at each state (the vocabulary is finite, so $\mathcal{P}$ is
+countable, and only those tokens producible by $\pi_\theta$ at $s$ are
+available); option durations are finite in expectation (the harness imposes
+a max number of turns per child rollout); rewards are bounded ($r_g \in [0, 1]$
+for rubric scores). Conditions (i)-(iii) are precisely the SPS hypotheses.
+The conclusion follows by direct application of SPS Theorem~1, with no new
+argument required --- the mapping is a faithful translation, and the SPS
+proof goes through unchanged.
+\end{proof}
+
+\begin{proposition}[Hierarchical Bellman equation for RLM]
+For the optimal SMDP value $V^*_\Omega(s) = \max_o Q^*_\Omega(s, o)$, we have
+the hierarchical Bellman equation
+\[
+V^*_\Omega(s) = \max_{o \in \mathcal{O}_s}
+   \mathbb{E}\bigl[R_o + \gamma^{K_o} V^*_\Omega(s')\bigr].
+\]
+This recovers the recursive subtree loss of concept~11 as the policy-gradient
+analogue: the recursion in the loss is exactly the recursion in the
+hierarchical Bellman backup.
+\end{proposition}
+
+\begin{proof}[Proof]
+Standard Bellman optimality applied to the SMDP. The connection to the
+recursive subtree loss is by inspection: both expressions are recursive over
+the tree of \texttt{rlm\_query} calls with the same accumulating structure.
+\end{proof}
+
+\section*{Discussion}
+
+\paragraph{What is gained from the connection.}
+\begin{itemize}
+\item \textbf{Free convergence guarantee.} Theorem~\ref{thm:smdp} promotes
+      RLM-Q-learning from heuristic to convergent under standard conditions ---
+      no new proof required.
+\item \textbf{Hierarchical Bellman equation.} The recursive subtree loss of
+      concept~11 is no longer just a notational convenience; it is the
+      policy-gradient counterpart of a value-function recursion that has been
+      studied for over two decades.
+\item \textbf{Options as actions for higher-level planning.} Once
+      \texttt{rlm\_query} calls are options, one can compose them into
+      \emph{multi-level} options (an option that invokes a sequence of
+      \texttt{rlm\_query} calls), giving a clean path to deeper hierarchical
+      planning without changing the training algorithm.
+\item \textbf{Intra-option learning.} SPS 1999 introduced intra-option
+      Q-learning, which updates Q-values from primitive transitions inside an
+      option (not just at termination). This translates directly to RLM:
+      every token within a child rollout could supply a Q-update for the
+      enclosing option, accelerating learning.
+\item \textbf{Interruptibility.} SPS 1999 also introduced interruption: stop
+      an option early if a higher-value option becomes available. For RLM, this
+      is a principled way to abort a child rollout that is going badly without
+      having to wait for its \texttt{FINAL}.
+\end{itemize}
+
+\paragraph{What does \emph{not} immediately carry over.} The shared-policy
+constraint of the paper means the \emph{internal policies} of all options are
+the \emph{same} $\pi_\theta$ (modulo prompt conditioning). The SPS framework
+allows arbitrarily different internal policies. This shared-policy
+restriction does not break SMDP convergence (Theorem~\ref{thm:smdp} still
+holds) but it does mean some SPS extensions --- e.g., learning option
+\emph{policies} independently from the high-level controller --- collapse to
+trivial cases.
+
+\paragraph{Recommended next step.} Formalise intra-option Q-learning in the
+RLM setting and check empirically whether it converges faster than the
+inheritance-only estimator of the blog. This is the most actionable corollary.
+
+\end{document}

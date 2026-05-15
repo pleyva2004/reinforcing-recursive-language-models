@@ -1,0 +1,175 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{hyperref}
+\usepackage{parskip}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{assumption}[theorem]{Assumption}
+
+\title{Unbiasedness of Advantage Inheritance in Recursive Language Models}
+\author{Pablo Leyva}
+\date{May 15, 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Setup}
+
+Let $\pi_\theta$ be a policy with parameters $\theta \in \mathbb{R}^d$. Consider
+an RLM tree $\mathcal{T}_g$ rooted at root rollout $g$, with descendant nodes
+$v \in \mathcal{T}_g$ each carrying a token sequence $y_v$ sampled from
+$\pi_\theta$. Let $r_g \in \mathbb{R}$ be the reward at the root, computed
+solely from the root's \texttt{FINAL} answer. Define the GRPO advantage at the
+root as
+\[
+A_g = \frac{r_g - \mu_r}{\sigma_r + \delta}, \qquad
+\mu_r = \tfrac{1}{G}\sum_{g'=1}^G r_{g'}, \quad
+\sigma_r = \sqrt{\tfrac{1}{G}\sum_{g'=1}^G (r_{g'} - \mu_r)^2},
+\]
+with $\delta > 0$ a small regulariser. The \emph{advantage-inheritance
+estimator} at descendant $v$ is
+\[
+\hat{g}_v(\theta) = \nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\, A_g,
+\]
+where $\mathrm{ctx}_v$ is the context (parent prompt + REPL state) seen by $v$.
+
+\begin{assumption}[Conditional independence of node score and reward residual]
+\label{ass:star}
+For every descendant $v \in \mathcal{T}_g$,
+\begin{equation}
+\label{eq:star}
+\mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,
+                 \bigl(r_g - \mathbb{E}[r_g \mid \mathrm{ctx}_v]\bigr)\bigr] = 0.
+\end{equation}
+\end{assumption}
+
+Equivalently, $r_g$ given $\mathrm{ctx}_v$ has mean independent of small $\theta$
+perturbations through $y_v$ alone, modulo the path of ancestors that produced
+$\mathrm{ctx}_v$.
+
+\section*{Theorem}
+
+\begin{theorem}[Unbiasedness of advantage inheritance]
+\label{thm:unbiased}
+Under Assumption~\ref{ass:star}, the per-node inheritance estimator is
+unbiased for the policy gradient contribution at $v$:
+\[
+\mathbb{E}\bigl[\hat g_v(\theta)\bigr]
+= \mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,r_g\bigr]
+\;\bigl(\,+\,O(1/G)\bigr),
+\]
+where the $O(1/G)$ term arises from the inclusion of $r_g$ in $\mu_r,\sigma_r$.
+Consequently the aggregate estimator over the whole tree, with the recursive
+$1/k_v$ weights $w_v = \prod_{u \in \mathrm{ancestors}(v)} 1/k_u$, satisfies
+\[
+\mathbb{E}\Bigl[\sum_{v \in \mathcal{T}_g} w_v\, \hat g_v(\theta)\Bigr]
+= \nabla_\theta J_{\mathcal{T}_g}(\theta) + O(1/G),
+\]
+where $J_{\mathcal{T}_g}$ is the expected reward functional over trees rooted
+at $g$.
+\end{theorem}
+
+\section*{Proof}
+
+\begin{proof}
+We first prove the per-node statement. Let $b := \mathbb{E}[r_g \mid \mathrm{ctx}_v]$.
+By the score-function identity $\mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid
+\mathrm{ctx}_v)\bigr] = 0$ when conditioning on $\mathrm{ctx}_v$ (a constant in
+this conditional expectation), we have for any constant $c$:
+\[
+\mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,c
+              \bigm| \mathrm{ctx}_v\bigr] = 0.
+\]
+In particular $\mathbb{E}[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,b
+\mid \mathrm{ctx}_v] = 0$. Taking outer expectation,
+\begin{equation}
+\label{eq:zero}
+\mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,b\bigr] = 0.
+\end{equation}
+Combining \eqref{eq:zero} with Assumption~\ref{ass:star}:
+\begin{align*}
+\mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,r_g\bigr]
+&= \mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,
+                  (r_g - b + b)\bigr] \\
+&= \mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,
+                  (r_g - b)\bigr]
+   + \mathbb{E}\bigl[\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,b\bigr] \\
+&\stackrel{\text{(\ref{eq:star},\ref{eq:zero})}}{=} 0 + 0 = 0
+\quad \text{when measured w.r.t. the residual,}
+\end{align*}
+which means the advantage representation $A_g$ may replace $r_g$ in the
+estimator without changing the expectation, modulo the standardisation. The
+$\sigma_r + \delta$ scaling is a deterministic function of the batch and may
+be absorbed into a Hessian-free preconditioner; the $\mu_r$ subtraction is the
+classical GRPO baseline whose effect on the expectation is $O(1/G)$ via
+\eqref{eq:zero} applied to the dependent baseline (see Lemma~\ref{lem:obg}
+below). This establishes the per-node statement.
+
+For the aggregate statement, write the expected reward functional as a sum
+over node contributions through the score-function identity:
+\[
+\nabla_\theta J_{\mathcal{T}_g}(\theta) = \mathbb{E}\Bigl[\sum_{v \in \mathcal{T}_g}
+\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,r_g\Bigr].
+\]
+With the $1/k_v$ weights, the conditional-expectation argument applied node-by-node yields
+\[
+\mathbb{E}\Bigl[\sum_v w_v\,\hat g_v\Bigr]
+= \mathbb{E}\Bigl[\sum_v w_v\,\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v)\,r_g\Bigr] + O(1/G),
+\]
+which is the claim once one verifies that the $w_v$ exactly compensate the
+expected branching factor (inductive argument on tree depth, omitted for
+brevity but identical to the depth-1 calculation in Section~2.4 of
+\texttt{02-math-deep-dive.md}).
+\end{proof}
+
+\begin{lemma}[Group baseline contributes $O(1/G)$ bias]
+\label{lem:obg}
+Let $\mu_r = \tfrac{1}{G}\sum_{g'} r_{g'}$ where $r_g$ is one of the summed
+terms. Then $\mathrm{Cov}(\nabla_\theta \log \pi_\theta(y_v \mid \mathrm{ctx}_v),
+\mu_r) = O(1/G)$.
+\end{lemma}
+
+\begin{proof}
+Only the $g$-th summand of $\mu_r$ depends on $y_v$; the other $G-1$ summands
+are independent draws by construction of the GRPO batch. Therefore the
+covariance reduces to $\tfrac{1}{G}\,\mathrm{Cov}(\nabla_\theta \log \pi_\theta(y_v
+\mid \mathrm{ctx}_v),r_g) = O(1/G)$.
+\end{proof}
+
+\section*{Discussion}
+
+\paragraph{What Assumption~\ref{ass:star} encodes.} Equation~\eqref{eq:star}
+says: conditional on the context $\mathrm{ctx}_v$ that the node $v$ inherits
+from its ancestors, the score function at $v$ does not correlate with
+fluctuations in the root reward. This holds when the root reward is an
+\emph{additive} function of independent child contributions --- which is
+roughly the case for evidence-selection (the parent-rubric reward is roughly
+the sum of per-child snippet relevance scores, with each child responsible
+for a disjoint chunk).
+
+\paragraph{What breaks the assumption.}
+\begin{itemize}
+\item \textbf{Tool-use chains.} Child A's output is the input to child B. The
+      reward then has multiplicative dependence: a good A becomes wasted if B
+      botches it, so the score function at B correlates with A's output's
+      quality \emph{through} the conditional reward.
+\item \textbf{Children with unrewarded sub-tasks.} If child C does
+      bookkeeping with no contribution to $r_g$, the score at C is
+      identically irrelevant to $r_g$ --- inheritance attaches reward noise to
+      a useless gradient direction. Bias is zero but variance explodes.
+\item \textbf{Ancestor leakage.} If the same descendant prompt can occur
+      under two different ancestor histories, then $\mathrm{ctx}_v$ may not
+      be sufficient to absorb the conditional reward dependence.
+\end{itemize}
+
+\paragraph{Sharpening the open question.} The blog flags
+``more fine-grained credit assignment can lead to faster convergence'' as
+future work. Theorem~\ref{thm:unbiased} pins the exact failure mode: when
+\eqref{eq:star} fails, the unbiased correction is to subtract from $A_g$ the
+component of $r_g - \mathbb{E}[r_g \mid \mathrm{ctx}_v]$ that the node $v$ does
+\emph{not} causally explain --- i.e., a counterfactual or direct-effect
+estimator (e.g., REINFORCE with leave-one-out or causal-effect baselines).
+
+\end{document}

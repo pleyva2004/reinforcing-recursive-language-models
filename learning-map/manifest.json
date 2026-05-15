@@ -1,0 +1,24 @@
+{
+  "paper_concepts": [
+    {"id": 1, "slug": "rlm-defn", "title": "Recursive Language Model", "level": "intro", "prereqs": []},
+    {"id": 2, "slug": "python-repl-environment", "title": "Python REPL agent environment", "level": "intro", "prereqs": [1]},
+    {"id": 3, "slug": "root-rollout", "title": "Root RLM rollout", "level": "intro", "prereqs": [1, 2]},
+    {"id": 4, "slug": "child-rollout", "title": "Child RLM rollout (rlm_query)", "level": "intro", "prereqs": [3]},
+    {"id": 5, "slug": "trajectory-tree", "title": "RLM trajectory tree", "level": "intermediate", "prereqs": [3, 4]},
+    {"id": 6, "slug": "shared-policy", "title": "Shared policy (one model, both roles)", "level": "intermediate", "prereqs": [4]},
+    {"id": 7, "slug": "ppo-clipped-surrogate", "title": "PPO clipped surrogate", "level": "intermediate", "prereqs": [6]},
+    {"id": 8, "slug": "grpo-advantage", "title": "Group-relative advantage (GRPO)", "level": "intermediate", "prereqs": [7]},
+    {"id": 9, "slug": "advantage-inheritance", "title": "Advantage inheritance child-from-parent", "level": "advanced", "prereqs": [5, 8]},
+    {"id": 10, "slug": "kg-averaging", "title": "1/k_g child contribution averaging", "level": "advanced", "prereqs": [9]},
+    {"id": 11, "slug": "recursive-subtree-loss", "title": "Recursive subtree loss (arbitrary depth)", "level": "advanced", "prereqs": [10]},
+    {"id": 12, "slug": "evidence-selection-task", "title": "Evidence selection task", "level": "intro", "prereqs": []},
+    {"id": 13, "slug": "rubric-llm-judge-reward", "title": "Rubric-based LLM-judge reward", "level": "intermediate", "prereqs": [12]},
+    {"id": 14, "slug": "cold-start-sft", "title": "Cold-start SFT for RLM harness syntax", "level": "intermediate", "prereqs": [6]}
+  ],
+  "improvement_concepts": [
+    {"id": 101, "slug": "tighter-inheritance-unbiasedness", "title": "Tighter unbiasedness theorem for advantage inheritance", "level": "advanced", "prereqs": [9, 10]},
+    {"id": 102, "slug": "local-baseline-variance-reduction", "title": "Per-child local-baseline variance reduction", "level": "advanced", "prereqs": [9]},
+    {"id": 103, "slug": "kg-scale-law", "title": "k_g scale-law experiment", "level": "intermediate", "prereqs": [10]},
+    {"id": 104, "slug": "rlm-as-options", "title": "RLM children as options (Sutton-Precup-Singh)", "level": "advanced", "prereqs": [4, 11]}
+  ]
+}

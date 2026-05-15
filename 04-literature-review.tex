@@ -1,0 +1,269 @@
+\documentclass[11pt]{article}
+
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{natbib}
+
+\hypersetup{
+  colorlinks = true,
+  linkcolor  = black,
+  citecolor  = black,
+  urlcolor   = blue
+}
+
+\title{Reinforcing Recursive Language Models: A Literature Review}
+\author{Pablo Leyva \\ \small \texttt{first-principles-to-llms} chain, study notes}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\iffalse
+Stage 5 lit review for the alphaXiv blog "Reinforcing Recursive Language Models"
+(NovaSky-AI / SkyRL contributors). Cross-references the chain repo and prior
+RLM / GRPO / rubric-reward / options literature. Compiles standalone with
+pdflatex + bibtex + pdflatex + pdflatex.
+\fi
+
+\section*{Notation}
+
+We adopt the symbol set used in the companion deep dive
+(\texttt{02-math-deep-dive.md}). Throughout, $\pi_\theta$ denotes a single shared
+autoregressive policy that plays both root and child roles in a recursive
+language-model (RLM) trajectory tree.
+
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Symbol & Meaning \\
+\hline
+$\pi_\theta(a \mid s)$ & Token-level policy: probability of token $a$ given context $s$. \\
+$G$                    & Number of root rollouts per query (GRPO group size). \\
+$k_g$                  & Number of child rollouts spawned by root $g$. \\
+$A_g$                  & Group-relative advantage: $A_g = (r_g - \mu_r)/(\sigma_r + \delta)$. \\
+$\rho_\theta(y^{(t)})$ & Importance ratio at token $t$, $\pi_\theta / \pi_{\theta_{\text{old}}}$. \\
+$\varepsilon$          & PPO clipping radius (typically $0.2$). \\
+$\mathcal{T}$          & Full trajectory tree (root plus descendant rollouts). \\
+\hline
+\end{tabular}
+\end{center}
+
+\section*{Background}
+
+A \emph{recursive language model} (RLM) \citep{zhang2026rlm} treats each LM
+session as a process that runs inside a Python REPL sandbox. The sandbox exposes
+three privileged calls: \texttt{FINAL(answer)} terminates the rollout,
+\texttt{rlm\_query(prompt, context)} spawns a single child rollout under the
+same policy, and \texttt{rlm\_query\_batched(prompts, context)} spawns a list.
+Every \texttt{rlm\_query} invocation grows the trajectory tree $\mathcal{T}$ by
+attaching a child whose own behaviour is again drawn from $\pi_\theta$.
+Recursion turns the per-token causal-language-model MDP --- in which states are
+prefixes and actions are next tokens \citep{schulman2017ppo} --- into a
+tree-structured trajectory whose leaves all eventually call \texttt{FINAL}.
+
+The motivation is long-context reasoning. Modern frontier models still struggle
+when the relevant evidence is scattered across millions of tokens, e.g.\
+multi-paper scientific corpora. The RLM scaffold lets a small model
+\emph{decompose} a long-context query into many short-context child queries
+(``search $\to$ expand $\to$ extract''), each of which fits comfortably in the
+backbone's effective context. Chain-of-thought prompting \citep{wei2022cot}
+unlocked sequential intermediate reasoning; the RLM idea is the natural next
+agentic-scaling move, replacing a flat thought stream with a recursive tree.
+
+\section*{Method}
+
+The blog's central contribution is to RL-fine-tune a \emph{single} shared policy
+$\pi_\theta$ to play both roles, rather than freezing the children as in the
+original RLM setup. The optimisation primitive is GRPO \citep{shao2024deepseekmath,
+deepseek2025r1}: for each query $x$, sample $G$ root rollouts
+$\{y_g\}_{g=1}^G \sim \pi_{\theta_{\text{old}}}(\cdot \mid x)$, score each with a
+rubric reward $r_g \in [0,1]$ (an LLM-judge call), and form group-relative
+advantages
+\[
+A_g \;=\; \frac{r_g - \mu_r}{\sigma_r + \delta},
+\qquad
+\mu_r = \tfrac{1}{G}\textstyle\sum_g r_g,
+\quad \sigma_r = \mathrm{stddev}(r_g).
+\]
+
+Each rollout (root or child) contributes a token-level PPO-clipped surrogate
+\citep{schulman2017ppo}:
+\begin{equation}
+\mathcal{L}_{\text{node}}(y, A; \theta)
+= \frac{1}{|y|} \sum_{t=1}^{|y|}
+  \min\!\Big(\rho_\theta(y^{(t)}) A,\;
+             \mathrm{clip}\!\big(\rho_\theta(y^{(t)}), 1{-}\varepsilon, 1{+}\varepsilon\big) A\Big).
+\label{eq:node}
+\end{equation}
+
+The novel piece is the \textbf{advantage-inheritance} rule. Each child rollout
+$y_{g,i}$ inherits the parent's GRPO advantage, $A_{g,i} := A_g$, and the
+per-root contribution to the loss is balanced by $1/k_g$:
+\begin{equation}
+\mathcal{L}_g^{\text{full}}(\theta)
+\;=\; \mathcal{L}_{\text{node}}(y_g, A_g; \theta)
+   \;+\; \frac{1}{k_g} \sum_{i=1}^{k_g} \mathcal{L}_{\text{node}}(y_{g,i}, A_g; \theta).
+\label{eq:depth1}
+\end{equation}
+Without the $1/k_g$ factor, a root that spawned more children would dominate
+the gradient and the optimiser would develop a perverse incentive to call
+\texttt{rlm\_query} more often. With it, every root contributes equally
+regardless of how branchy its subtree is.
+
+The depth-1 form \eqref{eq:depth1} extends recursively to arbitrary depth:
+\begin{equation}
+\mathcal{L}_{\text{subtree}}(y, A; \theta)
+\;=\; \mathcal{L}_{\text{node}}(y, A; \theta)
+   \;+\; \frac{1}{k_y} \sum_{i=1}^{k_y} \mathcal{L}_{\text{subtree}}(y_i, A; \theta).
+\label{eq:subtree}
+\end{equation}
+Every descendant of root $g$ carries the same advantage $A_g$, and the
+$1/k_y$ averaging at every level keeps the depth-balanced contribution
+invariant under the local branching factor.
+
+\section*{Results}
+
+The Qwen3.5-4B backbone is first cold-started by SFT on teacher rollouts
+distilled from Qwen3.5-397B-A17B, then RL-fine-tuned with the objective above.
+Training runs on a single $8\times$H200 node with batch 16, $G=8$ root samples
+per prompt and $k_g$ up to $4$, yielding up to $16 \cdot 8 \cdot 4 = 512$
+concurrent rollouts per gradient step. The average rubric score on the training
+distribution rises from $0.30$ to $0.60$ over RL.
+
+On a held-out multi-paper evidence-selection benchmark, the RL-fine-tuned 4B
+model reaches an average rubric score of $\approx 0.60$, matching Claude
+Sonnet 4.6's $0.607$ on the same scaffold while running in $\approx 7$\,s per
+query against Sonnet's $\approx 60$\,s --- an $8.5\times$ wall-clock speedup at
+roughly two orders of magnitude fewer parameters. As a quality result this is a
+\emph{tie}; the production win is latency and serving cost.
+
+\section*{Position in the literature}
+
+\paragraph{Original RLM paper.}
+\citet{zhang2026rlm} introduced the recursive-LM scaffold and showed that a
+\emph{prompted} (not RL-trained) frontier model can decompose long-context
+queries into a tree of sub-rollouts. They trained only the root, leaving
+children to a frozen LM. The blog reviewed here removes that asymmetry: one
+policy, both roles, end-to-end RL.
+
+\paragraph{Native parallelism.}
+\citet{wu2025parallel} take a similar single-policy RL stance but replace the
+recursion tree with a \emph{flat} parallel-reasoner ensemble distilled from the
+model itself. The two papers share the ethos of training a small model to
+exploit its own parallelism; they differ on whether the parallelism is
+recursive (tree, this work) or flat (ensemble, theirs).
+
+\paragraph{Pre-training / mid-training / RL interplay.}
+\citet{zhang2025interplay} survey where in the modern training pipeline RL pays
+off. Their findings frame why RLM training works at the 4B scale: a sufficiently
+strong mid-trained backbone is a prerequisite for GRPO to lift rubric scores
+the way the blog reports.
+
+\paragraph{GRPO behaviour vs SFT.}
+\citet{rajani2025grpo} characterise GRPO as a ``scalpel'' that amplifies
+already-present capabilities while SFT acts as a ``hammer'' that overwrites
+behaviour. The cold-start SFT $\to$ GRPO recipe used by the blog is exactly the
+combination their analysis recommends: SFT to install the recursive scaffold
+behaviour, GRPO to optimise it.
+
+\paragraph{Rubric-based rewards.}
+The blog uses an LLM-judge rubric reward instead of a verifiable reward (which
+the authors report was too noisy: ``F1 of selected snippets'' had unusable
+variance). This methodology comes from \citet{gunjal2025rubrics} and
+\citet{yuan2025rubric}, both of whom argue that rubric rewards extend RL to
+domains where ground-truth verifiers are absent --- exactly the
+evidence-selection setting here.
+
+\paragraph{Chain-of-thought.}
+\citet{wei2022cot} unlocked sequential intermediate reasoning. Recursive LMs
+are arguably the next agentic-scaling story: where CoT replaces a single token
+prediction with a sequence of intermediate tokens, RLM replaces a single
+context with a tree of contexts. The training-time challenge moves from
+``elicit reasoning'' to ``credit-assign across a tree.''
+
+\paragraph{DeepSeek-R1.}
+\citet{deepseek2025r1} demonstrated GRPO-at-scale with rule-based rewards.
+The blog inherits the GRPO machinery but swaps rule-based rewards for rubric
+rewards and extends the credit-assignment to a recursive trajectory tree.
+
+\paragraph{Hierarchical RL --- options framework.}
+A connection the blog does not draw explicitly: RLM children are very nearly
+\emph{options} in the sense of \citet{sutton1999options}. An option is a tuple
+$(I, \pi_o, \beta)$ where $I$ is the initiation set, $\pi_o$ the option policy,
+and $\beta$ the termination condition. For an RLM child, $I$ is the REPL state
+at the moment of \texttt{rlm\_query}, $\pi_o = \pi_\theta$ (the shared
+policy --- so options share parameters), and $\beta$ fires precisely when the
+child calls \texttt{FINAL}. Read this way, the recursive-subtree loss
+\eqref{eq:subtree} is a temporally-abstract policy gradient that backs up the
+\emph{root-level} advantage through every option in the tree; the $1/k_g$
+averaging is what re-weights options so their density does not bias the root
+gradient. Importing convergence and unbiasedness theorems from the options
+literature is, in our view, the cleanest theoretical hardening of the blog's
+informal unbiasedness argument.
+
+\paragraph{Engineering substrate.}
+The implementation lives in \citet{skyrl2025} (specifically PR \#1596), an
+extension of the SkyRL framework for recursive and agentic LM training.
+
+\section*{Discussion}
+
+\paragraph{Well-supported.}
+The core empirical claim --- that a single shared policy with parent-advantage
+inheritance and $1/k_g$ averaging trains a 4B RLM to Sonnet-4.6 parity on
+evidence selection --- is well-supported by the reported numbers. The
+$1/k_g$ balancing and the cold-start SFT recipe are both standard moves in the
+GRPO literature \citep{shao2024deepseekmath, deepseek2025r1, rajani2025grpo}
+and inherit those papers' training-stability story.
+
+\paragraph{Hand-waved.}
+The unbiasedness of advantage inheritance is argued informally. Inheriting
+$A_g$ for every descendant is unbiased only when the child's reward
+contribution is $\theta$-independent given the parent's rollout window; this
+holds for evidence selection (parent reward is roughly additive in child
+contributions) but fails for tasks with non-additive child interactions
+(e.g.\ tool-use chains where child A's output is child B's input). The blog
+flags ``more fine-grained credit assignment'' as future work but does not
+formalise the load-bearing assumption. Likewise, the model still slightly
+trails Sonnet 4.6 on rubric quality ($0.60$ vs $0.607$); the headline result
+is wall-clock parity, not quality breakthrough.
+
+\paragraph{Future directions.}
+Three open questions, expanded in the companion \texttt{05-improvements.tex}:
+(i) does the recursive-subtree loss \eqref{eq:subtree} train at depth $d > 1$?
+The blog only trains depth-1; (ii) at fixed compute, what is the optimal $k_g$,
+and is there a knee in the rubric-vs-$k_g$ curve? (iii) can RL discover the
+search-expand-extract strategy from scratch rather than being prompted into it?
+
+\section*{See also: cross-links to the \texttt{first-principles-to-llms} chain}
+
+This paper sits naturally on top of several chapters of the chain repository
+\href{https://github.com/pleyva2004/first-principles-to-llms}{\texttt{first-principles-to-llms}}:
+
+\begin{itemize}
+\item Causal-LM-as-MDP framing
+  (\href{https://github.com/pleyva2004/first-principles-to-llms/tree/main/Chapter\%2025}{Ch~25})
+  --- recovered at every node of the trajectory tree.
+\item Tiny-GPT pre-training
+  (\href{https://github.com/pleyva2004/first-principles-to-llms/tree/main/Chapter\%2027}{Ch~27})
+  --- the backbone scale at which a GRPO-trained model can match a much
+  larger frontier model.
+\item SFT, RLHF, DPO
+  (\href{https://github.com/pleyva2004/first-principles-to-llms/tree/main/Chapter\%2028}{Ch~28})
+  --- the cold-start SFT step that precedes RL here.
+\item MDP foundations
+  (\href{https://github.com/pleyva2004/first-principles-to-llms/tree/main/Chapter\%2029}{Ch~29})
+  --- where the per-token MDP and value/advantage definitions live.
+\item Maximum-entropy RL
+  (\href{https://github.com/pleyva2004/first-principles-to-llms/tree/main/Chapter\%2030}{Ch~30})
+  --- conceptual prior for the PPO clipping/KL machinery.
+\item Policy gradient and the GRPO derivation
+  (\href{https://github.com/pleyva2004/first-principles-to-llms/tree/main/Chapter\%2031}{Ch~31})
+  --- the surrogate \eqref{eq:node} and the group-baseline variance-reduction
+  argument that the blog inherits.
+\end{itemize}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

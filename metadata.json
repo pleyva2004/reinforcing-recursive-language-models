@@ -1,0 +1,21 @@
+{
+  "slug": "reinforcing-recursive-language-models",
+  "title": "Reinforcing Recursive Language Models",
+  "authors": ["NovaSky-AI / SkyRL contributors (specific blog authors not surfaced on the page)"],
+  "arxiv_id": null,
+  "source_url": "https://www.alphaxiv.org/blog/reinforcement-learning-for-rlms",
+  "source_kind": "alphaxiv-blog",
+  "pdf_path": null,
+  "source_html_path": "source.html",
+  "source_md_path": "source.md",
+  "code_url": "https://github.com/NovaSky-AI/SkyRL/pull/1596",
+  "primary_reference_paper": {
+    "title": "Recursive Language Models",
+    "authors": "Zhang et al.",
+    "url": "https://www.alphaxiv.org/abs/2512.24601"
+  },
+  "headline": "RL fine-tune small (4B) models to behave as native recursive language models (RLMs) by training parent and child RLMs under a single, shared policy. Children inherit the parent's GRPO advantage so the whole recursive trajectory is optimized as one trajectory.",
+  "key_result": "On an evidence-selection task over multi-paper scientific corpora, an RL-fine-tuned Qwen3.5-4B matches Claude Sonnet 4.6 (avg rubric 0.6) using the same RLM scaffold + Python REPL — at a fraction of the size and cost.",
+  "started": "2026-05-15",
+  "stages_completed": ["00-ingest"]
+}
