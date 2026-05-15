@@ -62,11 +62,12 @@ GitHub Actions does this automatically on every push that touches `.tex` or `.bi
 
 ```bash
 cd sandbox && pip install -r requirements.txt
-python3 toy_recursive_bandit.py   # ~30s on CPU; reward 0.30 → 0.97
-python3 tiny_gpt_rlm.py           # ~5min on CPU; reward 0.27 → 0.52, KL=12.7
+python3 toy_recursive_bandit.py   # math-clean: ~30s on CPU
+python3 tiny_gpt_rlm.py           # numpy tiny GPT: ~5min on CPU
+python3 real_rlm_lora.py --train  # NEW: real Qwen 2.5 1.5B + LoRA, ~3-4hr on M4 Pro
 ```
 
-Both demonstrate the central technical claim: a single shared policy + child-inherits-parent-advantage GRPO is sufficient to train recursive agentic behavior.
+The toy scripts demonstrate the math; the real script is a near-reproduction of the blog's central training claim on a smaller model.
 
 ## Run the proposed-improvement prototypes
 

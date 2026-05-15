@@ -177,3 +177,13 @@ The pattern matches the chain Ch 31 GRPO-on-tiny-GPT toy: a small, well-targeted
 - **Cold-start SFT is essential at 4B.** Without it, pass@16 = 0 — the harness syntax (especially `FINAL(...)` vs `FINAL_VAR(...)` and code-block formatting) is outside the model's edge of competence. RL alone can't bootstrap from zero pass.
 - **Strategy must be in the prompt.** They don't expect the model to discover the search → expand → extract strategy; it's prompted in. Strategy discovery is on the future-work list.
 - **Rubric reward (LLM-as-judge) beats verifiable F1 reward** for this task because gold answers admit multiple valid text spans. Training-signal design ≠ ground-truth design.
+
+## 9. Real implementation notes (from sandbox/real_rlm_lora.py)
+
+The toy bandit and numpy-tiny-GPT in `sandbox/` are math-clean demos. The real implementation in `sandbox/real_rlm_lora.py` (Qwen 2.5 1.5B + LoRA + real arxiv corpus) departs from the blog's setup in three ways worth flagging:
+
+1. **Smaller model.** Qwen 2.5 1.5B vs the blog's Qwen3.5-4B — fits in 48 GB unified memory with full LoRA backprop. Findings should transfer qualitatively but absolute reward numbers will differ.
+2. **Lower concurrency.** $G = 4$, $k_g = 2$ per step (vs blog's $G = 8$, $k_g$ up to 4) — keeps memory pressure manageable on a single laptop.
+3. **Simpler reward.** Char-span F1 instead of LLM-judge rubric — keeps the training loop self-contained (no second model required for scoring) at the cost of noisier reward signal.
+
+These departures are intentional; the central claim (shared-policy + advantage-inheritance GRPO trains recursive agentic behavior on real LMs) is what we test.
